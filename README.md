@@ -4,6 +4,7 @@ Shared, **declarative (YAML-first)** test & evaluation providers, reused across 
 projects. Code lives here once; **consuming projects carry only YAML.**
 
 - **System tests** — deterministic assertions over WebSocket / MQTT / HTTP transports.
+- **CLI tests** — deterministic assertions over `argparse` console scripts (stdout / JSON / exit code).
 - **UX tests** — judged by an LLM acting as a human (**DeepSeek** judge).
 - **UI simulation** — goal-driven browser agent *(Phase 2)*.
 
@@ -12,7 +13,7 @@ Full rationale, component model, reuse strategy, and risks: **[ARCHITECTURE.md](
 ## What's here
 
 ```
-eval_commons/providers/   ws_audio · mqtt · sim_user (1.5 stub) · ui (2 stub)
+eval_commons/providers/   ws_audio · mqtt · cli · sim_user (1.5 stub) · ui (2 stub)
 eval_commons/assertions/  wer_scorer (jiwer WER/CER)
 eval_commons/audio/       WAV → PCM16 frame helpers
 shared/                   deepseek-judge.yaml · promptfooconfig.base.yaml · rubrics/ru-ux.yaml

@@ -4,8 +4,10 @@ A reusable, **declarative (YAML-first)** test & evaluation framework shared acro
 multiple projects. It covers two test surfaces today and a third on the roadmap:
 
 1. **System tests** — deterministic, assertion-based (transports: WebSocket, MQTT, HTTP).
-2. **User/UX tests** — judged by an LLM acting as a human (judge model: **DeepSeek**).
-3. **UI-interaction simulation** *(Phase 2)* — goal-driven browser agent.
+2. **CLI tests** — deterministic, assertion-based over local `argparse` console scripts
+   (stdout / JSON / exit code). This is the dominant test surface for both projects.
+3. **User/UX tests** — judged by an LLM acting as a human (judge model: **DeepSeek**).
+4. **UI-interaction simulation** *(Phase 2)* — goal-driven browser agent.
 
 The governing constraint: **code lives here, once; every consuming project carries
 only YAML.** The only bespoke code is the set of transport/scoring providers in this
@@ -68,6 +70,7 @@ projects stay YAML-only.
 │    ws_audio_provider.py   → drives a stateful streaming-ASR WebSocket           │
 │                              (register → PCM16 frames → end → partial/final)     │
 │    mqtt_provider.py        → generic MQTT publish/subscribe assert (paho)        │
+│    cli_provider.py         → single-shot subprocess CLI (argv → stdout/json/exit)│
 │    sim_user_provider.py    → DeepEval ConversationSimulator wrapper  (Phase 1.5) │
 │    ui_provider.py          → Playwright goal-driven browser agent    (Phase 2)   │
 │                                                                                 │
@@ -156,7 +159,53 @@ out so the duplication is a known trade-off, not an accident.
 
 ---
 
-## 5. DeepSeek as the judge
+## 5. CLI testing (the `cli_provider`)
+
+Both projects expose most of their testable behaviour as **`argparse` console scripts**, not
+network endpoints — e.g. `irene-config-validate`, `irene-build-analyze`,
+`irene-dependency-validate`, `irene-replay-trace`; `wb-openapi`, `broadlink-cli --convert`,
+`broadlink-discovery`, `device-test <id> <command>`. They share one shape: **argv in →
+stdout/stderr + (often) a `--json` blob + a meaningful exit code (0/1/2)**. promptfoo has no
+built-in provider that spawns a local process, so this is a shared custom provider — written
+once, same YAML-only contract as the transports.
+
+`cli_provider.py` runs a single subprocess (no shell, argv passed verbatim) and shapes its
+output via the same `return_mode` switch as §4:
+
+| `return_mode` | `output` is… | used by |
+|---|---|---|
+| `full` (default) | JSON `{stdout, stderr, exit_code, duration_ms}` | python/JS multi-field assertions |
+| `stdout` | stdout only | `contains`, `regex`, `llm-rubric` over `--help` text |
+| `stderr` | stderr only | error-message assertions |
+| `json` | stdout parsed & re-emitted (fails if not JSON) | `is-json`, JSON-path on `--json` tools |
+| `exit_code` | the exit code as a string | `equals: "0"` / `"2"` |
+
+Run console scripts (or `python -m ...`) from the target project via `config.cwd`; pass
+fixtures through `vars` and template them into `config.argv`. Example:
+
+```yaml
+providers:
+  - id: file://../../eval-commons/eval_commons/providers/cli_provider.py
+    config:
+      cwd: ../wb-mqtt-voice
+      argv: ["irene-config-validate", "--config-file", "{{config}}", "--json"]
+      return_mode: exit_code
+tests:
+  - vars: { config: configs/minimal.toml }
+    assert: [{ type: equals, value: "0" }]
+```
+
+**Scope (deliberate).** Deterministic, single-shot invocations only. Two things are out:
+*interactive REPLs* (`irene-cli`, `device-test` with no command) need scripted stdin with
+prompt-matching — a later extension behind this same interface; *long-running services*
+(servers, `mqtt-sniffer`, `broadlink-cli --learn`) are already covered by the WS/MQTT/HTTP
+transport providers and smoke tests, or need live hardware. The provider accepts a fixed
+`config.stdin` string for trivial pipe/confirm cases, but does not drive an interactive
+session.
+
+---
+
+## 6. DeepSeek as the judge
 
 Defined **once** in `shared/deepseek-judge.yaml`, referenced by every UX assertion:
 
@@ -173,11 +222,12 @@ a base-URL + key swap. The same model id feeds DeepEval's `model=` in Phase 1.5.
 
 ---
 
-## 6. Phased roadmap
+## 7. Phased roadmap
 
 - **Phase 1 (now).** promptfoo runner · WS-audio provider · WER scorer · DeepSeek
   `llm-rubric` UX judging · promptfoo built-in multi-turn for conversational UX ·
-  MQTT provider available for `wb-mqtt-bridge`.
+  MQTT provider available for `wb-mqtt-bridge` · **CLI provider** for the `argparse`
+  console scripts in both projects (single-shot, deterministic).
 - **Phase 1.5 (if persona depth is insufficient).** Drop DeepEval `ConversationSimulator`
   into `sim_user_provider.py`, behind the same YAML interface — no project changes.
 - **Phase 2 (UI simulation).** `ui_provider.py` (Playwright goal-driven agent) slots into
@@ -190,7 +240,7 @@ rewrite *there*.
 
 ---
 
-## 7. Risks & gotchas
+## 8. Risks & gotchas
 
 1. **DeepSeek-as-judge on Russian is unproven (highest risk).** Sources confirm DeepSeek is
    used as a baseline judge but establish **nothing** about Russian grading quality.
@@ -199,8 +249,10 @@ rewrite *there*.
    model. See `shared/rubrics/ru-ux.yaml` and `examples/` for where calibration data lives.
 2. **No packaged-config reuse in promptfoo.** Reuse is `file://` refs into a *pinned*
    checkout, not `npm install`. Pin per project; treat provider edits as a versioned bump.
-3. **MQTT + WER + UI are the only bespoke code — by design.** Isolated here, never
-   per-project. The streaming WS protocol is bespoke too (stateful binary handshake).
+3. **MQTT + WER + CLI + UI are the only bespoke code — by design.** Isolated here, never
+   per-project. The streaming WS protocol is bespoke too (stateful binary handshake). The
+   CLI provider is generic subprocess plumbing; per-project specifics stay in YAML (argv,
+   cwd, fixtures).
 4. **Per-mode re-runs.** The `return_mode` PoC runs audio more than once per utterance;
    acceptable for now, flagged for a single-run fan-out optimization (§4).
 5. **Localization discipline.** Judge user-facing CHOICE/response values in Russian; never
@@ -209,7 +261,7 @@ rewrite *there*.
 
 ---
 
-## 8. How a project consumes this (in one screen)
+## 9. How a project consumes this (in one screen)
 
 ```yaml
 # wb-mqtt-voice/eval/promptfooconfig.yaml  — PURE YAML, no project code
